@@ -1831,8 +1831,11 @@
     function pick(code, cls, label, p) {
       var pressed = o === code;
       var aria = pressed ? "Remover resultado fixado" : "Fixar " + (code === "D" ? "empate" : "vitória do " + label);
+      // Expected points in this match for the team: 3 x P(win) + P(draw).
+      var xp = code === "D" ? "" : " · " + (3 * p + pr.pD).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " pts";
+      var xpTitle = code === "D" ? "" : ". Pontos esperados neste jogo: 3 × chance de vitória + chance de empate";
       return '<button type="button" class="pick ' + cls + '" data-fx="' + fx.id + '" data-o="' + code + '" aria-pressed="' + pressed +
-        '" title="' + esc(aria) + '"><span class="t">' + esc(label) + '</span><span class="p">' + pctInt(p) + "</span></button>";
+        '" title="' + esc(aria + xpTitle) + '"><span class="t">' + esc(label) + '</span><span class="p">' + pctInt(p) + xp + "</span></button>";
     }
     var scores = pr.topScores.map(function (s) { return s.home + "–" + s.away + " (" + pctInt(s.p) + ")"; }).join(" · ");
     return '<article class="fx' + (o ? " is-fixed" : "") + '">' +
