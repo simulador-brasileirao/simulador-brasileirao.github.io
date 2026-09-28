@@ -551,6 +551,7 @@
     </div>
     <span class="status"><span class="plaus" id="plaus" hidden></span><span id="status"></span></span>
     <div class="scenario-actions">
+      <button type="button" class="btn-clear" id="restore" hidden title="Voltar ao cenário que você tinha montado antes de abrir o link">Restaurar meu cenário</button>
       <button type="button" class="btn-clear" id="share" aria-expanded="false" aria-controls="share-pop">Compartilhar</button>
       <button type="button" class="btn-clear" id="clear" hidden>Limpar</button>
       <div class="share-pop" id="share-pop" hidden>
@@ -1216,7 +1217,10 @@
     return TOKEN_VERSION + "." + payload.season + "." + out;
   }
 
-  /** Decode a token for this payload; null if invalid, another version or another season. */
+  /**
+   * Decode a token for this payload; null if invalid, another version or another
+   * season. `dropped` counts fixed results for matches that are no longer open.
+   */
   function decodeScenario(payload, token) {
     try {
       var parts = String(token || "").split(".");
@@ -1242,10 +1246,11 @@
       if (!view || gx < 2 || gx >= n || mix.xg + mix.goals + mix.odds === 0) return null;
       var byPair = {};
       payload.fixtures.forEach(function (fx) { byPair[pairIndex(n, fx.home, fx.away)] = fx.id; });
-      var fixed = {};
+      var fixed = {}, dropped = 0;
       var set = function (pair, code) {
         if (code < 1 || code > 3 || pair >= nPairs) throw new Error("bad entry");
         if (byPair[pair] !== undefined) fixed[byPair[pair]] = TOKEN_OUTCOMES[code];
+        else dropped += 1;  // match played since the link was made
       };
       if (get(1) === 0) {
         var count = get(bitsFor(nPairs + 1));
@@ -1253,7 +1258,7 @@
       } else {
         for (var p = 0; p < nPairs; p++) { var code = get(2); if (code) set(p, code); }
       }
-      return { model: model, mix: mix, gx: gx, view: view, fixed: fixed };
+      return { model: model, mix: mix, gx: gx, view: view, fixed: fixed, dropped: dropped };
     } catch (err) {
       return null;
     }
@@ -1318,13 +1323,23 @@
   } catch (e) { /* storage unavailable */ }
 
   // A shared link (#token) overrides the saved state; its results become manual ones.
-  var sharedFromLink = false;
+  var sharedFromLink = false, linkDropped = 0, restoreAvailable = false;
   (function () {
     var token = "";
     try { token = decodeURIComponent((location.hash || "").replace(/^#/, "")); } catch (e) { /* ignore */ }
     var shared = token ? WhatIfEngine.decodeScenario(DATA, token) : null;
     if (!shared) return;
     sharedFromLink = true;
+    linkDropped = shared.dropped || 0;
+    // The recipient's own scenario is kept aside (not overwritten) and can be restored.
+    try {
+      var own = localStorage.getItem(STORE_KEY);
+      var ownState = own ? JSON.parse(own) : null;
+      if (ownState && ownState.fixed && Object.keys(ownState.fixed).length) {
+        localStorage.setItem(STORE_KEY + ":backup", own);
+        restoreAvailable = true;
+      }
+    } catch (e) { /* storage unavailable */ }
     state.model = shared.model;
     state.mix = shared.mix;
     state.gx = shared.gx;
@@ -1435,6 +1450,7 @@
           Math.round(ess).toLocaleString("pt-BR") + " simulações sem peso." + (ess < 1000 ? " Poucas: as porcentagens deste cenário oscilam mais." : "")
         : "";
       renderAll();
+      if (!document.getElementById("share-pop").hidden) renderShare();
     }, 20);
   }
 
@@ -1501,7 +1517,9 @@
     document.getElementById("clear").hidden = ids.length === 0;
     if (!ids.length) {
       title.textContent = "Cenário atual";
-      chips.innerHTML = '<span class="hint">Nenhum resultado fixado. As chances abaixo vêm só do modelo.</span>';
+      chips.innerHTML = linkDropped
+        ? '<span class="hint">Os jogos deste link já foram disputados; as chances abaixo usam os resultados reais.</span>'
+        : '<span class="hint">Nenhum resultado fixado. As chances abaixo vêm só do modelo.</span>';
       document.getElementById("plaus").hidden = true;
       updateStrip();
       return;
@@ -2107,6 +2125,28 @@
     }
   });
   document.getElementById("share-copy").addEventListener("click", copyShareLink);
+  document.getElementById("restore").addEventListener("click", function () {
+    try {
+      var own = JSON.parse(localStorage.getItem(STORE_KEY + ":backup") || "null");
+      if (own) {
+        var ids = {};
+        DATA.fixtures.forEach(function (fx) { ids[fx.id] = true; });
+        state.fixed = {};
+        state.autoFilled = {};
+        Object.keys(own.fixed || {}).forEach(function (id) { if (ids[id]) state.fixed[id] = own.fixed[id]; });
+        Object.keys(own.autoFilled || {}).forEach(function (id) { if (state.fixed[id]) state.autoFilled[id] = true; });
+        if (own.model && (DATA.models[own.model] || own.model === "mix")) state.model = own.model;
+        if (own.mix) state.mix = own.mix;
+        if (own.gx) state.gx = own.gx;
+        localStorage.removeItem(STORE_KEY + ":backup");
+      }
+    } catch (e) { /* storage unavailable */ }
+    restoreAvailable = false;
+    linkDropped = 0;
+    document.getElementById("restore").hidden = true;
+    save();
+    recompute();
+  });
   document.addEventListener("click", function (e) {
     var pop = document.getElementById("share-pop");
     if (!pop.hidden && !e.target.closest(".scenario-actions")) {
@@ -2124,7 +2164,7 @@
   current = getBaseline(state.model);
   if (state.view !== "odds") showView(state.view);
   renderAll();
-  if (sharedFromLink) save();
+  document.getElementById("restore").hidden = !restoreAvailable;
   if (hasScenario()) recompute();
   else document.getElementById("status").textContent = N_SIMS.toLocaleString("pt-BR") + " simulações";
 })();
