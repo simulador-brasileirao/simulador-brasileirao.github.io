@@ -370,8 +370,12 @@
   @media (max-width: 640px) { .opt { display: none; } }
 
   /* Heatmap */
-  .heat td.cell { padding: 0; width: 34px; min-width: 34px; height: 30px; text-align: center; font-size: 12px; border: 2px solid var(--surface); }
-  .heat th.n { text-align: center; padding: 6px 0; }
+  /* Cells share the panel width (at least 24px each), so all 20 positions fit on a desktop screen. */
+  .heat td.cell { padding: 0; min-width: 24px; height: 30px; text-align: center; font-size: 12px; border: 2px solid var(--surface); }
+  .heat th.n { text-align: center; padding: 6px 0; font-size: 10px; letter-spacing: 0; }
+  .heat td.teamcell { padding: 6px 8px 6px 4px; }
+  /* Team names stay visible when the table scrolls sideways (phones). */
+  .heat th.l, .heat td.teamcell { position: sticky; left: 0; z-index: 1; background: var(--surface); }
   .heat tbody tr { cursor: default; }
   .heat tbody tr:hover td.cell { filter: brightness(0.96); }
 
