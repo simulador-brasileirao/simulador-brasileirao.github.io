@@ -605,7 +605,7 @@
           <a id="share-wa" href="#" target="_blank" rel="noopener">WhatsApp</a>
           <span class="hint" id="share-msg" role="status"></span>
         </div>
-        <span class="hint">O link guarda o modelo, os pesos do Mix, o G-X, a aba e os resultados fixados.</span>
+        <span class="hint">O link guarda o modelo, os pesos do Mix, o G-X, a aba, os resultados fixados e, em Jogos-chave, o time e os filtros.</span>
       </div>
     </div>
   </section>
@@ -1333,6 +1333,11 @@
   var TOKEN_MODELS = ["xg", "goals", "odds", "mix"];
   var TOKEN_VIEWS = ["odds", "heat", "evo", "key"];
   var TOKEN_OUTCOMES = ["", "H", "D", "A"];
+  // Optional Jogos-chave settings, appended after the fixed results (older tokens end there;
+  // their zero padding reads as "no settings").
+  var TOKEN_KM_CRITS = ["pos", "title", "gx", "rel"];
+  var TOKEN_KM_SCOPES = ["all", "own", "others"];
+  var TOKEN_KM_ROUND_NONE = 63;  // round field: 0 = all rounds, 63 = matches without a round
 
   function bitsFor(count) { var b = 1; while ((1 << b) < count) b++; return b; }
 
@@ -1365,6 +1370,16 @@
       var dense = new Array(nPairs).fill(0);
       entries.forEach(function (e) { dense[e[0]] = e[1]; });
       dense.forEach(function (v) { put(v, 2); });
+    }
+    var km = state.km;
+    if (state.view === "key" && km) {
+      put(1, 1);
+      put(km.team, bitsFor(n));
+      put(Math.max(0, TOKEN_KM_CRITS.indexOf(km.crit)), 2);
+      put(Math.max(0, TOKEN_KM_SCOPES.indexOf(km.scope)), 2);
+      put(Math.max(0, Math.min(3, km.minIndex || 0)), 2);
+      var r = km.round === "none" ? TOKEN_KM_ROUND_NONE : km.round ? Math.max(0, Math.min(62, parseInt(km.round, 10))) : 0;
+      put(r, 6);
     }
     while (bits.length % 6) bits.push(0);
     var out = "";
@@ -1417,7 +1432,17 @@
       } else {
         for (var p = 0; p < nPairs; p++) { var code = get(2); if (code) set(p, code); }
       }
-      return { model: model, mix: mix, gx: gx, view: view, fixed: fixed, dropped: dropped };
+      var km = null;
+      var kmBits = 1 + bitsFor(n) + 2 + 2 + 2 + 6;
+      if (bits.length - pos >= kmBits && get(1) === 1) {
+        var team = get(bitsFor(n)), crit = TOKEN_KM_CRITS[get(2)], scope = TOKEN_KM_SCOPES[get(2)];
+        var minIndex = get(2), rr = get(6);
+        if (team < n && crit && scope && minIndex <= 2) {
+          km = { team: team, crit: crit, scope: scope, minIndex: minIndex,
+            round: rr === 0 ? "" : rr === TOKEN_KM_ROUND_NONE ? "none" : String(rr) };
+        }
+      }
+      return { model: model, mix: mix, gx: gx, view: view, fixed: fixed, dropped: dropped, km: km };
     } catch (err) {
       return null;
     }
@@ -1514,10 +1539,18 @@
     state.view = shared.view;
     state.fixed = shared.fixed;
     state.autoFilled = {};
+    if (shared.km) {
+      state.kmTeam = shared.km.team;
+      state.kmCrit = shared.km.crit;
+      state.kmScope = shared.km.scope;
+      state.kmRound = shared.km.round;
+      if (shared.km.crit === "pos") state.kmMinPos = KM_MIN.pos[shared.km.minIndex];
+      else state.kmMinP = KM_MIN.p[shared.km.minIndex];
+    }
   })();
 
   function scenarioToken() {
-    return WhatIfEngine.encodeScenario(DATA, state);
+    return WhatIfEngine.encodeScenario(DATA, Object.assign({}, state, { km: kmTokenState() }));
   }
   function shareBaseUrl() {
     var meta = document.querySelector('meta[property="og:url"]');
@@ -1882,6 +1915,43 @@
     return '<svg viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true">' + out.join("") + "</svg>" +
       '<span class="km-ax" aria-hidden="true"><span>' + (lo + 1) + "º</span><span>" + (hi > lo ? hi + 1 + "º" : "") + "</span></span>";
   }
+  // The team, current value and ranked matches that the Jogos-chave tab shows (needs current.byFixture).
+  function kmSelection() {
+    if (state.kmTeam === null) {
+      var lead = 0;
+      for (var i = 1; i < n; i++) if (DATA.table[i].points > DATA.table[lead].points) lead = i;
+      state.kmTeam = state.team !== "" ? +state.team : lead;
+    }
+    var t = state.kmTeam, roundDates = {};
+    DATA.fixtures.forEach(function (fx) {
+      if (state.fixed[fx.id]) return;
+      var r = fx.round === null ? "none" : String(fx.round);
+      (roundDates[r] = roundDates[r] || []).push(fx.date);
+    });
+    if (state.kmRound !== "" && !roundDates[state.kmRound]) state.kmRound = "";
+    var crit = kmCriterion();
+    var now = crit === "pos" ? current.expPos[t] : current.pos[t].slice(crit.from, crit.to).reduce(function (a, b) { return a + b; }, 0);
+    var inRound = function (x) {
+      var r = DATA.fixtures[x.k].round;
+      return state.kmRound === "" || (r === null ? "none" : String(r)) === state.kmRound;
+    };
+    var all = WhatIfEngine.fixtureImpact(current, t, crit).filter(inRound);
+    var isOwn = function (x) { var fx = DATA.fixtures[x.k]; return fx.home === t || fx.away === t; };
+    var isPos = state.kmCrit === "pos", minVal = isPos ? state.kmMinPos : state.kmMinP;
+    var big = all.filter(function (x) { return x.impact >= minVal - 1e-9; });
+    var list = big.filter(function (x) { return state.kmScope === "all" || (state.kmScope === "own") === isOwn(x); });
+    var what = { pos: "posição média", title: "chance de título", gx: "chance de G" + state.gx, rel: "chance de rebaixamento" }[state.kmCrit];
+    return { t: t, crit: crit, up: KM_UP[state.kmCrit], now: now, all: all, big: big, list: list, isOwn: isOwn,
+      isPos: isPos, minVal: minVal, what: what, roundDates: roundDates };
+  }
+  // Jogos-chave settings carried by share links.
+  function kmTokenState() {
+    if (state.kmTeam === null) return null;
+    var isPos = state.kmCrit === "pos";
+    return { team: state.kmTeam, crit: state.kmCrit, scope: state.kmScope, round: state.kmRound,
+      minIndex: Math.max(0, KM_MIN[isPos ? "pos" : "p"].indexOf(isPos ? state.kmMinPos : state.kmMinP)) };
+  }
+
   function renderKeyMatches() {
     if (!current || !current.byFixture) return;
     var sel = document.getElementById("km-team");
@@ -1889,22 +1959,13 @@
       sel.innerHTML = teams.map(function (t, i) { return [t, i]; }).sort(function (a, b) { return a[0].localeCompare(b[0]); })
         .map(function (ti) { return '<option value="' + ti[1] + '">' + esc(ti[0]) + "</option>"; }).join("");
     }
-    if (state.kmTeam === null) {
-      var lead = 0;
-      for (var i = 1; i < n; i++) if (DATA.table[i].points > DATA.table[lead].points) lead = i;
-      state.kmTeam = state.team !== "" ? +state.team : lead;
-    }
-    var t = state.kmTeam;
+    var sl = kmSelection();
+    var t = sl.t, crit = sl.crit, up = sl.up, now = sl.now, all = sl.all, big = sl.big, list = sl.list;
+    var isOwn = sl.isOwn, isPos = sl.isPos, minVal = sl.minVal, what = sl.what, roundDates = sl.roundDates;
     sel.value = String(t);
     // Rounds with open matches; a round of only postponed games is labelled as such.
-    var rsel = document.getElementById("km-round"), roundDates = {};
-    DATA.fixtures.forEach(function (fx) {
-      if (state.fixed[fx.id]) return;
-      var r = fx.round === null ? "none" : String(fx.round);
-      (roundDates[r] = roundDates[r] || []).push(fx.date);
-    });
+    var rsel = document.getElementById("km-round");
     var roundKeys = Object.keys(roundDates).sort(function (a, b) { return (a === "none" ? 999 : +a) - (b === "none" ? 999 : +b); });
-    if (state.kmRound !== "" && !roundDates[state.kmRound]) state.kmRound = "";
     rsel.innerHTML = '<option value="">Todas as rodadas</option>' + roundKeys.map(function (r) {
       var ds = roundDates[r].slice().sort(), span = dateLabel(ds[0]) + (ds[0] === ds[ds.length - 1] ? "" : " – " + dateLabel(ds[ds.length - 1]));
       var name = r === "none" ? "Sem rodada definida" : "Rodada " + r + (roundDates[r].length < n / 4 ? " (adiados)" : "");
@@ -1918,24 +1979,12 @@
     document.querySelectorAll("#km-crit button").forEach(function (b) { b.setAttribute("aria-checked", String(b.dataset.crit === state.kmCrit)); });
     document.querySelectorAll("#km-scope button").forEach(function (b) { b.setAttribute("aria-checked", String(b.dataset.scope === state.kmScope)); });
 
-    var crit = kmCriterion(), up = KM_UP[state.kmCrit];
-    var now = crit === "pos" ? current.expPos[t] : current.pos[t].slice(crit.from, crit.to).reduce(function (a, b) { return a + b; }, 0);
-    var inRound = function (x) {
-      var r = DATA.fixtures[x.k].round;
-      return state.kmRound === "" || (r === null ? "none" : String(r)) === state.kmRound;
-    };
-    var all = WhatIfEngine.fixtureImpact(current, t, crit).filter(inRound);
-    var isOwn = function (x) { var fx = DATA.fixtures[x.k]; return fx.home === t || fx.away === t; };
-    var isPos = state.kmCrit === "pos", minVal = isPos ? state.kmMinPos : state.kmMinP;
     var msel = document.getElementById("km-min");
     msel.innerHTML = KM_MIN[isPos ? "pos" : "p"].map(function (v) {
       return '<option value="' + v + '">' + kmImpact(v) + "</option>";
     }).join("");
     msel.value = String(minVal);
-    var big = all.filter(function (x) { return x.impact >= minVal - 1e-9; });
-    var list = big.filter(function (x) { return state.kmScope === "all" || (state.kmScope === "own") === isOwn(x); });
     var nOwn = all.filter(isOwn).length;
-    var what = { pos: "posição média", title: "chance de título", gx: "chance de G" + state.gx, rel: "chance de rebaixamento" }[state.kmCrit];
     document.getElementById("km-summary").innerHTML = "<b>" + esc(teams[t]) + "</b> " + (hasScenario() ? "no seu cenário" : "hoje") + ": " + what + " <b>" + kmValue(now) + "</b>. " +
       (state.kmRound === "" ? "" : (state.kmRound === "none" ? "Sem rodada definida" : "Rodada " + state.kmRound) + ": ") +
       all.length + (all.length === 1 ? " jogo em aberto (" : " jogos em aberto (") + nOwn + " do time, " + (all.length - nOwn) + " de outros)" +
@@ -1985,6 +2034,7 @@
     var more = document.getElementById("km-more");
     more.hidden = list.length <= state.kmShow;
     more.textContent = "Mostrar mais (" + (list.length - state.kmShow) + " restantes)";
+    if (!document.getElementById("share-pop").hidden) renderShare();
     document.getElementById("km-legend").textContent =
       (state.kmCrit === "pos"
         ? "Barras: chance de o time terminar em cada posição (de " + (lo + 1) + "º a " + (hi + 1) + "º) se o jogo terminar em cada resultado; faixa verde no melhor resultado para o time, vermelha no pior. " +
@@ -2363,6 +2413,7 @@
   document.getElementById("km-round").addEventListener("change", function (e) {
     state.kmRound = e.target.value;
     state.kmShow = 10;
+    syncHash();
     renderKeyMatches();
   });
   document.getElementById("km-gx-select").addEventListener("change", function (e) {
@@ -2501,6 +2552,14 @@
     for (var i = 1; i < n; i++) if (current.title[i] > current.title[leader]) leader = i;
     var text = (hasScenario() ? "Meu cenário no Simulador do Brasileirão " : "Simulador do Brasileirão ") + DATA.season +
       ": " + teams[leader] + " com " + pctInt(current.title[leader]) + " de chance de título. " + url;
+    if (state.view === "key" && current.byFixture) {
+      var sl = kmSelection(), top = sl.list[0];
+      var roundTxt = state.kmRound === "" ? "" : state.kmRound === "none" ? " (jogos sem rodada definida)" : " na rodada " + state.kmRound;
+      text = "Jogos-chave" + roundTxt + (hasScenario() ? " no meu cenário" : "") + " do Simulador do Brasileirão " + DATA.season + ": " +
+        teams[sl.t] + ", " + sl.what + " " + kmValue(sl.now) +
+        (top ? ". O jogo que mais pesa" + (state.kmScope === "own" ? " entre os do time" : state.kmScope === "others" ? " entre os de outros times" : "") + ": " + teams[DATA.fixtures[top.k].home] + " × " + teams[DATA.fixtures[top.k].away] +
+          " (diferença de " + kmImpact(top.impact) + " entre o melhor e o pior resultado)" : "") + ". " + url;
+    }
     document.getElementById("share-wa").href = "https://wa.me/?text=" + encodeURIComponent(text);
   }
   function copyShareLink() {
